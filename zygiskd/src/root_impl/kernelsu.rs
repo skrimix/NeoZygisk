@@ -82,6 +82,9 @@ const KSU_IOCTL_UID_GRANTED_ROOT: u32 = 0xC0004B08;  // nr=8, dir=RW
 const KSU_IOCTL_UID_SHOULD_UMOUNT: u32 = 0xC0004B09; // nr=9, dir=RW
 const KSU_IOCTL_GET_MANAGER_UID: u32 = 0x80004B0A;   // nr=10, dir=R
 
+// Per-user UID range for process UID normalization.
+const PER_USER_UID_RANGE: u32 = 100_000;
+
 /// Data structures for ioctl commands.
 /// The `#[repr(C)]` attribute is critical to ensure that the memory layout of these
 /// Rust structs is identical to their C counterparts in the kernel, preventing data
@@ -344,7 +347,7 @@ fn uid_should_umount_ioctl(fd: RawFd, uid: i32) -> bool {
 fn uid_is_manager_ioctl(fd: RawFd, uid: i32) -> bool {
     let mut cmd = KsuGetManagerUidCmd { uid: 0 };
     if ksuctl_ioctl(fd, KSU_IOCTL_GET_MANAGER_UID, &mut cmd).is_ok() {
-        return uid as u32 == cmd.uid;
+        return uid as u32 % PER_USER_UID_RANGE == cmd.uid;
     }
     false
 }
@@ -443,15 +446,16 @@ fn uid_is_manager_prctl(uid: i32) -> bool {
             );
         }
         if result_ok == KERNEL_SU_OPTION as u32 {
-            return uid as u32 == manager_uid;
+            return uid as u32 % PER_USER_UID_RANGE == manager_uid;
         }
     }
 
     // Fallback: if the kernel doesn't support the direct query, check the known package
     // paths on disk based on the detected variant. This is less reliable.
+    let user_id = uid as u32 / PER_USER_UID_RANGE;
     let manager_path = match LEGACY_VARIANT.get() {
-        Some(KernelSuVariant::Official) => "/data/user_de/0/me.weishu.kernelsu",
-        Some(KernelSuVariant::Next) => "/data/user_de/0/com.rifsxd.ksunext",
+        Some(KernelSuVariant::Official) => format!("/data/user_de/{}/me.weishu.kernelsu", user_id),
+        Some(KernelSuVariant::Next) => format!("/data/user_de/{}/com.rifsxd.ksunext", user_id),
         None => return false, // Should not happen if detect_version ran.
     };
     if let Ok(s) = rustix::fs::stat(manager_path) {
